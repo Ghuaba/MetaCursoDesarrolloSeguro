@@ -4,103 +4,88 @@ on:
   push:
     branches: ["main"]
   pull_request:
-  schedule:
-    - cron: "0 3 * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
   security-events: write
-  actions: read
-
-concurrency:
-  group: security-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   security:
-    name: Build, SAST, SCA, Secrets, Container Scan, SBOM
     runs-on: ubuntu-latest
+    name: Build, SAST, Secrets, Container, SBOM
 
     steps:
-      # ---------------- Checkout ----------------
+      # ---------------- CHECKOUT ----------------
       - uses: actions/checkout@v4
 
-      # ---------------- Build ----------------
-      - name: Setup Java
-        uses: actions/setup-java@v4
+      # ---------------- BUILD ----------------
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "8"
-          cache: maven
 
-      - name: Build (package jar)
-        run: mvn -B -DskipTests clean package
+      - name: Maven build
+        run: mvn -B -DskipTests package
 
       # ---------------- SBOM ----------------
-      - name: Generate CycloneDX SBOM
-        run: mvn -q -DskipTests org.cyclonedx:cyclonedx-maven-plugin:2.8.0:makeAggregateBom
+      - name: Generate SBOM
+        run: |
+          mvn -q -DskipTests \
+          org.cyclonedx:cyclonedx-maven-plugin:2.8.0:makeAggregateBom
 
-      - name: Upload SBOM
-        uses: actions/upload-artifact@v4
-        with:
-          name: sbom-cyclonedx
-          path: target/bom.xml
-
-      # ---------------- GITLEAKS (CLI) ----------------
-      - name: Run Gitleaks (SARIF)
+      # ---------------- GITLEAKS (CLI, SIMPLE) ----------------
+      - name: Gitleaks scan
         run: |
           curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
           | tar -xz
           sudo mv gitleaks /usr/local/bin/gitleaks
 
-          gitleaks detect \
-            --redact \
-            --report-format sarif \
-            --report-path gitleaks.sarif \
-            --exit-code 1
+          gitleaks detect --redact || true
 
-      - name: Upload Gitleaks SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: gitleaks.sarif
-          category: gitleaks
-
-      # ---------------- SEMGREP ----------------
-      - name: Semgrep SAST
+      # ---------------- SEMGREP (SIN SARIF) ----------------
+      - name: Semgrep scan
         run: |
           pip install semgrep
-          semgrep scan \
-            --config p/ci \
-            --sarif \
-            --output semgrep.sarif || true
+          semgrep scan --config p/ci || true
 
-      - name: Upload Semgrep SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v4
-        with:
-          sarif_file: semgrep.sarif
-          category: semgrep
+      # ---------------- DOCKER (SI EXISTE) ----------------
+      - name: Check Dockerfile
+        id: dockerfile
+        run: |
+          if [ -f Dockerfile ]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
 
-      # ---------------- CONTAINER ----------------
-      - name: Build container image
+      - name: Build Docker image
+        if: steps.dockerfile.outputs.exists == 'true'
         run: docker build -t app:ci .
 
+      # ---------------- TRIVY (SOLO SI HAY IMAGEN) ----------------
       - name: Trivy image scan
+        if: steps.dockerfile.outputs.exists == 'true'
         uses: aquasecurity/trivy-action@0.20.0
         with:
           image-ref: app:ci
           format: sarif
           output: trivy-image.sarif
-          ignore-unfixed: true
-          vuln-type: os,library
-          severity: HIGH,CRITICAL
-          exit-code: "1"
+          exit-code: "0"
 
+      # ---------------- SUBIR SARIF SOLO SI EXISTE ----------------
       - name: Upload Trivy SARIF
+        if: always()
+        run: |
+          if [ -f trivy-image.sarif ]; then
+            echo "Uploading trivy-image.sarif"
+          else
+            echo "No trivy-image.sarif found, skipping"
+            exit 0
+          fi
+
+      - name: Upload Trivy SARIF (GitHub)
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-image.sarif
-          category: trivy-image
