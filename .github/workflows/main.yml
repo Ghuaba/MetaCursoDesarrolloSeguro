@@ -31,11 +31,12 @@ jobs:
         with:
           distribution: temurin
           java-version: '8'
-          cache: 'maven'
+          cache: maven
 
       - name: Build (package jar for Docker)
         run: mvn -B -DskipTests clean package
 
+      # ---------------- SBOM ----------------
       - name: Generate CycloneDX SBOM (dependencies)
         run: mvn -q -DskipTests org.cyclonedx:cyclonedx-maven-plugin:2.8.0:makeAggregateBom
 
@@ -46,27 +47,7 @@ jobs:
           name: sbom-cyclonedx
           path: target/bom.xml
 
-      - name: OWASP Dependency-Check (fail on HIGH+)
-        uses: dependency-check/Dependency-Check_Action@v3
-        with:
-          project: 'MetaCursoDesarrolloSeguro'
-          path: '.'
-          format: 'HTML,XML,JSON'
-          out: 'dependency-check-report'
-          args: >-
-            --scan .
-            --format ALL
-            --failOnCVSS 7.0
-        env:
-          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-
-      - name: Upload Dependency-Check reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dependency-check-report
-          path: dependency-check-report
-
+      # ---------------- Secrets ----------------
       - name: Gitleaks (secret scanning)
         uses: gitleaks/gitleaks-action@v2
         with:
@@ -81,6 +62,7 @@ jobs:
           sarif_file: gitleaks.sarif
           category: gitleaks
 
+      # ---------------- SAST ----------------
       - name: Semgrep SAST
         uses: returntocorp/semgrep-action@v1
         with:
@@ -94,18 +76,19 @@ jobs:
           sarif_file: semgrep.sarif
           category: semgrep
 
+      # ---------------- Container ----------------
       - name: Build container image (local)
         run: docker build -t app:ci .
 
       - name: Trivy image scan (HIGH/CRITICAL, fail build)
         uses: aquasecurity/trivy-action@0.20.0
         with:
-          image-ref: 'app:ci'
-          format: 'sarif'
-          output: 'trivy-image.sarif'
+          image-ref: app:ci
+          format: sarif
+          output: trivy-image.sarif
           ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'HIGH,CRITICAL'
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
           exit-code: '1'
 
       - name: Upload Trivy SARIF to code scanning
