@@ -50,7 +50,7 @@ jobs:
           pip install semgrep==1.45.0
           semgrep scan --config p/ci || true
 
-      # ---------------- DOCKER BUILD (CONTROLADO) ----------------
+      # ---------------- DOCKER BUILD ----------------
       - name: Build Docker image
         id: docker
         run: |
@@ -60,21 +60,25 @@ jobs:
             echo "built=false" >> $GITHUB_OUTPUT
           fi
 
-      # ---------------- TRIVY (SARIF SOLO SI BUILD OK) ----------------
+      # ---------------- TRIVY IMAGE SCAN (SARIF SOLO SI BUILD OK) ----------------
       - name: Trivy image scan
         if: steps.docker.outputs.built == 'true'
         uses: aquasecurity/trivy-action@0.20.0
         with:
           image-ref: app:ci
           format: sarif
-          output: trivy-image.sarif
+          output: $GITHUB_WORKSPACE/trivy-image.sarif
           exit-code: "0"
 
-      # ---------------- UPLOAD SARIF (SOLO SI EXISTE) ----------------
+      # ---------------- LIST FILES AFTER TRIVY SCAN (DEPURACIÓN) ----------------
+      - name: List files after Trivy scan
+        run: ls -alh
+
+      # ---------------- VERIFICACIÓN Y CARGA DE SARIF ----------------
       - name: Upload Trivy SARIF to GitHub Security
         if: always()
         run: |
-          if [ -f trivy-image.sarif ]; then
+          if [ -f $GITHUB_WORKSPACE/trivy-image.sarif ]; then
             echo "Uploading SARIF"
           else
             echo "No SARIF file found, skipping"
@@ -85,4 +89,4 @@ jobs:
         if: always()
         uses: github/codeql-action/upload-sarif@v4
         with:
-          sarif_file: trivy-image.sarif
+          sarif_file: $GITHUB_WORKSPACE/trivy-image.sarif
