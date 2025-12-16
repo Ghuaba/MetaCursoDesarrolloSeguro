@@ -1,75 +1,116 @@
-name: 01 - Main CI / CD Pipeline
+name: Security CI
 
 on:
   push:
-    paths-ignore:
-      - '**/*.md'
-      - '**/*.txt'
+    branches: ["main"]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"  # daily at 03:00 UTC
   workflow_dispatch:
 
-
-# Otorgamos los permisos globalmente
 permissions:
   contents: read
-  issues: read
-  checks: write
-  pull-requests: write
-  actions: read
   security-events: write
-  packages: write
+  actions: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build
-    uses: ./.github/workflows/build.yml
-    secrets: inherit  # https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idsecretsinherit
+  security:
+    name: Build, SAST, SCA, Secrets, Container Scan, SBOM
+    runs-on: ubuntu-latest
 
-  #Análisis de dependencias
-  sca:
-    needs: build
-    name: SCA
-    uses: ./.github/workflows/sca.yml
-    secrets: inherit
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  #Análisis de código Estático
-  sast:
-    needs: build
-    name: SAST
-    uses: ./.github/workflows/sast.yml
-    secrets: inherit
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+          cache: 'maven'
 
-  #Análisis y Uso de Licencias.
-  license-compliance:
-    needs: build
-    name: License Compliance
-    uses: ./.github/workflows/license-compliance.yml
-    secrets: inherit
+      - name: Build (package jar for Docker)
+        run: mvn -B -DskipTests clean package
 
-  #Creación de Docker
-  docker:
-    needs: build
-    name: Build docker image
-    uses: ./.github/workflows/docker.yml
-    secrets: inherit
-  
-  #Scaneo de vulnerabilidades en la imagen de Docker
-  container-image-scan:
-    needs: docker
-    name: Container Image Scan
-    uses: ./.github/workflows/container-image-scan.yml
-    secrets: inherit
-    with:
-      image-tag: ${{ needs.docker.outputs.image-tag }}
+      - name: Generate CycloneDX SBOM (dependencies)
+        run: mvn -q -DskipTests org.cyclonedx:cyclonedx-maven-plugin:2.8.0:makeAggregateBom
 
+      - name: Upload SBOM artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: target/bom.xml
 
-  #Análisis de código Dinámico
-  dast:
-    needs: [build,docker]
-    name: DAST Scan
-    uses: ./.github/workflows/dast.yml
-    secrets: inherit
-    with:
-      image-tag: ${{ needs.docker.outputs.image-tag }}
+      - name: OWASP Dependency-Check (fail on HIGH+)
+        uses: dependency-check/Dependency-Check_Action@v4
+        with:
+          project: 'MetaCursoDesarrolloSeguro'
+          path: '.'
+          format: 'HTML,XML,JSON'
+          out: 'dependency-check-report'
+          args: >-
+            --scan .
+            --format ALL
+            --failOnCVSS 7.0
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
 
-  
-  
+      - name: Upload Dependency-Check reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          path: dependency-check-report
+
+      - name: Gitleaks (secret scanning)
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: >-
+            detect --no-git --verbose --redact
+            --report-format=sarif --report-path=gitleaks.sarif
+
+      - name: Upload Gitleaks SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+
+      - name: Semgrep SAST
+        uses: returntocorp/semgrep-action@v1
+        with:
+          config: p/ci
+          generateSarif: true
+
+      - name: Upload Semgrep SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+      - name: Build container image (local)
+        run: docker build -t app:ci .
+
+      - name: Trivy image scan (HIGH/CRITICAL, fail build)
+        uses: aquasecurity/trivy-action@0.20.0
+        with:
+          image-ref: 'app:ci'
+          format: 'sarif'
+          output: 'trivy-image.sarif'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '1'
+
+      - name: Upload Trivy SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
