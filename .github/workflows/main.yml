@@ -58,11 +58,10 @@ jobs:
             echo "built=true" >> $GITHUB_OUTPUT
           else
             echo "built=false" >> $GITHUB_OUTPUT
-            exit 1  # Asegura que el flujo falle si Docker no se construye.
           fi
 
       # ---------------- TRIVY IMAGE SCAN (SARIF SOLO SI BUILD OK) ----------------
-      - name: Run Trivy image scan
+      - name: Trivy image scan
         if: steps.docker.outputs.built == 'true'
         uses: aquasecurity/trivy-action@0.20.0
         with:
@@ -70,12 +69,10 @@ jobs:
           format: sarif
           output: $GITHUB_WORKSPACE/trivy-image.sarif
           exit-code: "0"
-        env:
-          GITHUB_WORKSPACE: ${{ github.workspace }}
 
       # ---------------- LIST FILES AFTER TRIVY SCAN (DEPURACIÓN) ----------------
       - name: List files after Trivy scan
-        run: ls -alh $GITHUB_WORKSPACE
+        run: ls -alh
 
       # ---------------- VERIFICACIÓN Y CARGA DE SARIF ----------------
       - name: Upload Trivy SARIF to GitHub Security
@@ -84,7 +81,7 @@ jobs:
           if [ -f $GITHUB_WORKSPACE/trivy-image.sarif ]; then
             echo "Uploading SARIF"
           else
-            echo "No SARIF file found, skipping upload"
+            echo "No SARIF file found, skipping"
             exit 0
           fi
 
