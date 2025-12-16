@@ -5,7 +5,7 @@ on:
     branches: ["main"]
   pull_request:
   schedule:
-    - cron: "0 3 * * *"  # daily at 03:00 UTC
+    - cron: "0 3 * * *"
   workflow_dispatch:
 
 permissions:
@@ -24,66 +24,70 @@ jobs:
 
     steps:
       # ---------------- Checkout ----------------
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       # ---------------- Build ----------------
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '8'
+          java-version: "8"
           cache: maven
 
-      - name: Build (package jar for Docker)
+      - name: Build (package jar)
         run: mvn -B -DskipTests clean package
 
       # ---------------- SBOM ----------------
-      - name: Generate CycloneDX SBOM (dependencies)
+      - name: Generate CycloneDX SBOM
         run: mvn -q -DskipTests org.cyclonedx:cyclonedx-maven-plugin:2.8.0:makeAggregateBom
 
-      - name: Upload SBOM artifact
-        if: always()
+      - name: Upload SBOM
         uses: actions/upload-artifact@v4
         with:
           name: sbom-cyclonedx
           path: target/bom.xml
 
-      # ---------------- Secrets ----------------
-      - name: Gitleaks (secret scanning)
-        uses: gitleaks/gitleaks-action@v2
-        with:
-          report-format: sarif
-          report-path: gitleaks.sarif
-          exit-code: 1
+      # ---------------- GITLEAKS (CLI) ----------------
+      - name: Run Gitleaks (SARIF)
+        run: |
+          curl -sSL https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz \
+          | tar -xz
+          sudo mv gitleaks /usr/local/bin/gitleaks
 
-      - name: Upload Gitleaks SARIF to code scanning
+          gitleaks detect \
+            --redact \
+            --report-format sarif \
+            --report-path gitleaks.sarif \
+            --exit-code 1
+
+      - name: Upload Gitleaks SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: gitleaks.sarif
           category: gitleaks
 
-      # ---------------- SAST ----------------
+      # ---------------- SEMGREP ----------------
       - name: Semgrep SAST
-        uses: returntocorp/semgrep-action@v1
-        with:
-          config: p/ci
-          generateSarif: true
-          sarif_file: semgrep.sarif
+        run: |
+          pip install semgrep
+          semgrep scan \
+            --config p/ci \
+            --sarif \
+            --output semgrep.sarif || true
 
-      - name: Upload Semgrep SARIF to code scanning
+      - name: Upload Semgrep SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: semgrep.sarif
           category: semgrep
 
-      # ---------------- Container ----------------
-      - name: Build container image (local)
+      # ---------------- CONTAINER ----------------
+      - name: Build container image
         run: docker build -t app:ci .
 
-      - name: Trivy image scan (HIGH/CRITICAL, fail build)
+      - name: Trivy image scan
         uses: aquasecurity/trivy-action@0.20.0
         with:
           image-ref: app:ci
@@ -92,11 +96,11 @@ jobs:
           ignore-unfixed: true
           vuln-type: os,library
           severity: HIGH,CRITICAL
-          exit-code: '1'
+          exit-code: "1"
 
-      - name: Upload Trivy SARIF to code scanning
+      - name: Upload Trivy SARIF
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with:
           sarif_file: trivy-image.sarif
           category: trivy-image
