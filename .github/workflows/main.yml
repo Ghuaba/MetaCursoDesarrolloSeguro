@@ -47,7 +47,7 @@ jobs:
           path: target/bom.xml
 
       - name: OWASP Dependency-Check (fail on HIGH+)
-        uses: owasp/dependency-check-action@v0.6.1
+        uses: dependency-check/Dependency-Check_Action@v3
         with:
           project: 'MetaCursoDesarrolloSeguro'
           path: '.'
